@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Tra Cứu Địa Điểm Gần Nhất</title>
-  <!-- Nhúng Tailwind CSS qua CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 min-h-screen p-4 md:p-8">
@@ -14,7 +13,6 @@
       Tra Cứu Địa Điểm Gần Nhất
     </h1>
 
-    <!-- Khung nhập link -->
     <div class="flex flex-col sm:flex-row gap-3 mb-6">
       <input
         type="text"
@@ -31,10 +29,8 @@
       </button>
     </div>
 
-    <!-- Nơi hiển thị thông báo lỗi -->
     <div id="errorMessage" class="hidden bg-red-50 text-red-600 p-4 rounded-lg mb-6 border border-red-200 text-sm"></div>
 
-    <!-- Nơi hiển thị kết quả -->
     <div id="resultsContainer" class="hidden space-y-4">
       <h2 class="text-lg font-semibold text-gray-700">
         Kết quả (Sắp xếp từ gần đến xa):
@@ -44,7 +40,6 @@
   </div>
 
   <script>
-    // 1. DỮ LIỆU CODE CỨNG (Sửa/Thêm danh sách địa điểm trực tiếp tại đây)
     const locationsData = [
       {
         id: 1,
@@ -68,9 +63,8 @@
       }
     ];
 
-    // 2. CÔNG THỨC TÍNH KHOẢNG CÁCH (Haversine)
     function calculateDistance(lat1, lon1, lat2, lon2) {
-      const R = 6371; // Bán kính Trái Đất (km)
+      const R = 6371;
       const dLat = ((lat2 - lat1) * Math.PI) / 180;
       const dLon = ((lon2 - lon1) * Math.PI) / 180;
       const a =
@@ -83,69 +77,59 @@
       return (R * c).toFixed(2);
     }
 
-    // Hàm gọi API có bộ đếm thời gian tự ngắt (Timeout 5s)
-    async function fetchWithTimeout(resource, options = {}) {
-      const { timeout = 5000 } = options;
-      const controller = new AbortController();
-      const id = setTimeout(() => controller.abort(), timeout);
-      try {
-        const response = await fetch(resource, {
-          ...options,
-          signal: controller.signal
-        });
-        clearTimeout(id);
-        return response;
-      } catch (err) {
-        clearTimeout(id);
-        throw err;
-      }
-    }
-
-    // 3. BÓC TÁCH TỌA ĐỘ TỪ LINK HOẶC TỌA ĐỘ NHẬP TAY
     async function extractCoordsFromUrl(rawUrl) {
       if (!rawUrl) return null;
 
       let url = rawUrl.trim();
-      try {
-        url = decodeURIComponent(url);
-      } catch (e) {}
+      try { url = decodeURIComponent(url); } catch (e) {}
 
-      // a. Nhập trực tiếp tọa độ (VD: 10.8608434, 106.7824432)
+      // Tọa độ trực tiếp
       const matchDirect = url.match(/^(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)$/);
       if (matchDirect) {
         return { lat: parseFloat(matchDirect[1]), lng: parseFloat(matchDirect[2]) };
       }
 
-      // b. Link dạng @lat,lng
+      // Link dài @lat,lng
       const matchAt = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
       if (matchAt) {
         return { lat: parseFloat(matchAt[1]), lng: parseFloat(matchAt[2]) };
       }
 
-      // c. Link chứa !3dlat!4dlng hoặc q=lat,lng
+      // Link dài !3d hoặc q=
       const matchData = url.match(/(!3d|q=|ll=|center=)(-?\d+\.\d+)(!4d|,|%2C)(-?\d+\.\d+)/);
       if (matchData) {
         return { lat: parseFloat(matchData[2]), lng: parseFloat(matchData[4]) };
       }
 
-      // d. Link ngắn (maps.app.goo.gl hoặc goo.gl) -> Bóc tách qua AllOrigins Proxy
+      // Link ngắn: Tự nhận diện môi trường (Localhost vs Vercel Production)
       if (url.includes('goo.gl') || url.includes('maps.app')) {
-        try {
-          const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-          const res = await fetchWithTimeout(proxyUrl, { timeout: 5000 });
-          const data = await res.json();
-          
-          const redirectedUrl = data?.status?.url || '';
-          const htmlContent = data?.contents || '';
-          const combined = redirectedUrl + " " + htmlContent;
+        const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.protocol === 'file:';
 
-          const mAt = combined.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-          if (mAt) return { lat: parseFloat(mAt[1]), lng: parseFloat(mAt[2]) };
+        if (isLocal) {
+          try {
+            const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+            const res = await fetch(proxyUrl);
+            const data = await res.json();
+            const combined = (data?.status?.url || '') + " " + (data?.contents || '');
 
-          const mData = combined.match(/(!3d|q=|center=)(-?\d+\.\d+)(!4d|,|%2C)(-?\d+\.\d+)/);
-          if (mData) return { lat: parseFloat(mData[2]), lng: parseFloat(mData[4]) };
-        } catch (err) {
-          console.warn('Proxy timeout hoặc lỗi kết nối:', err);
+            const mAt = combined.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+            if (mAt) return { lat: parseFloat(mAt[1]), lng: parseFloat(mAt[2]) };
+
+            const mData = combined.match(/(!3d|q=|center=)(-?\d+\.\d+)(!4d|,|%2C)(-?\d+\.\d+)/);
+            if (mData) return { lat: parseFloat(mData[2]), lng: parseFloat(mData[4]) };
+          } catch (err) {
+            console.warn('Proxy Local error:', err);
+          }
+        } else {
+          try {
+            const res = await fetch(`/api/resolve?url=${encodeURIComponent(url)}`);
+            const data = await res.json();
+            if (data.success && data.lat && data.lng) {
+              return { lat: data.lat, lng: data.lng };
+            }
+          } catch (err) {
+            console.warn('Vercel API error:', err);
+          }
         }
       }
 
@@ -154,7 +138,6 @@
 
     let currentResults = [];
 
-    // 4. HÀM CHIA SẺ ẢNH TÒA NHÀ + LINK SANG WHATSAPP
     async function shareLocationWithImage(index) {
       const item = currentResults[index];
       const shareText = `Gửi bạn vị trí: ${item.name}\nĐịa chỉ: ${item.city} - ${item.info}\nLink Google Map: ${item.mapLink}`;
@@ -173,14 +156,13 @@
           return;
         }
       } catch (err) {
-        console.log('Không gửi được file ảnh trực tiếp:', err);
+        console.log('Không gửi được file ảnh:', err);
       }
 
       const fallbackUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
       window.open(fallbackUrl, '_blank');
     }
 
-    // 5. XỬ LÝ KHI BẤM NÚT TÌM KIẾM
     async function handleSearch() {
       const input = document.getElementById('customerLink').value.trim();
       const errorDiv = document.getElementById('errorMessage');
