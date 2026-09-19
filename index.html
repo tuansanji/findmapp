@@ -23,8 +23,9 @@
         class="flex-1 p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
       />
       <button
+        id="searchBtn"
         onclick="handleSearch()"
-        class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg transition"
+        class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg transition disabled:bg-gray-400"
       >
         Tìm vị trí gần nhất
       </button>
@@ -43,13 +44,13 @@
   </div>
 
   <script>
-    // 1. DỮ LIỆU CỦA BẠN (Đã chuyển từ Google Sheet thành Object)
+    // 1. DỮ LIỆU CODE CỨNG (Sửa/Thêm danh sách địa điểm trực tiếp tại đây)
     const locationsData = [
       {
         id: 1,
         name: "200/400 Vietnam VN",
         mapLink: "https://maps.app.goo.gl/UDKUYE9ishwYFSi77",
-        image: "images/quan-1.jpg", // Đường dẫn ảnh trong thư mục images
+        image: "images/quan-1.jpg",
         city: "Riyadh",
         info: "Mở cửa 8h - 22h",
         lat: 24.7136,
@@ -69,7 +70,7 @@
 
     // 2. CÔNG THỨC TÍNH KHOẢNG CÁCH (Haversine)
     function calculateDistance(lat1, lon1, lat2, lon2) {
-      const R = 6371;
+      const R = 6371; // Bán kính Trái Đất (km)
       const dLat = ((lat2 - lat1) * Math.PI) / 180;
       const dLon = ((lon2 - lon1) * Math.PI) / 180;
       const a =
@@ -82,32 +83,87 @@
       return (R * c).toFixed(2);
     }
 
-    // 3. BÓC TÁCH TỌA ĐỘ TỪ LINK
-    function extractCoordsFromUrl(url) {
+    // Hàm gọi API có bộ đếm thời gian tự ngắt (Timeout 5s)
+    async function fetchWithTimeout(resource, options = {}) {
+      const { timeout = 5000 } = options;
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), timeout);
+      try {
+        const response = await fetch(resource, {
+          ...options,
+          signal: controller.signal
+        });
+        clearTimeout(id);
+        return response;
+      } catch (err) {
+        clearTimeout(id);
+        throw err;
+      }
+    }
+
+    // 3. BÓC TÁCH TỌA ĐỘ TỪ LINK HOẶC TỌA ĐỘ NHẬP TAY
+    async function extractCoordsFromUrl(rawUrl) {
+      if (!rawUrl) return null;
+
+      let url = rawUrl.trim();
+      try {
+        url = decodeURIComponent(url);
+      } catch (e) {}
+
+      // a. Nhập trực tiếp tọa độ (VD: 10.8608434, 106.7824432)
+      const matchDirect = url.match(/^(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)$/);
+      if (matchDirect) {
+        return { lat: parseFloat(matchDirect[1]), lng: parseFloat(matchDirect[2]) };
+      }
+
+      // b. Link dạng @lat,lng
       const matchAt = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-      if (matchAt) return { lat: parseFloat(matchAt[1]), lng: parseFloat(matchAt[2]) };
+      if (matchAt) {
+        return { lat: parseFloat(matchAt[1]), lng: parseFloat(matchAt[2]) };
+      }
 
-      const matchQ = url.match(/(!3d|q=)(-?\d+\.\d+)(!4d|,)(-?\d+\.\d+)/);
-      if (matchQ) return { lat: parseFloat(matchQ[2]), lng: parseFloat(matchQ[4]) };
+      // c. Link chứa !3dlat!4dlng hoặc q=lat,lng
+      const matchData = url.match(/(!3d|q=|ll=|center=)(-?\d+\.\d+)(!4d|,|%2C)(-?\d+\.\d+)/);
+      if (matchData) {
+        return { lat: parseFloat(matchData[2]), lng: parseFloat(matchData[4]) };
+      }
 
-      const matchDirect = url.match(/^\s*(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)\s*$/);
-      if (matchDirect) return { lat: parseFloat(matchDirect[1]), lng: parseFloat(matchDirect[2]) };
+      // d. Link ngắn (maps.app.goo.gl hoặc goo.gl) -> Bóc tách qua AllOrigins Proxy
+      if (url.includes('goo.gl') || url.includes('maps.app')) {
+        try {
+          const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+          const res = await fetchWithTimeout(proxyUrl, { timeout: 5000 });
+          const data = await res.json();
+          
+          const redirectedUrl = data?.status?.url || '';
+          const htmlContent = data?.contents || '';
+          const combined = redirectedUrl + " " + htmlContent;
+
+          const mAt = combined.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+          if (mAt) return { lat: parseFloat(mAt[1]), lng: parseFloat(mAt[2]) };
+
+          const mData = combined.match(/(!3d|q=|center=)(-?\d+\.\d+)(!4d|,|%2C)(-?\d+\.\d+)/);
+          if (mData) return { lat: parseFloat(mData[2]), lng: parseFloat(mData[4]) };
+        } catch (err) {
+          console.warn('Proxy timeout hoặc lỗi kết nối:', err);
+        }
+      }
 
       return null;
     }
 
-    // 4. HÀM XỬ LÝ CHIA SẺ ẢNH TÒA NHÀ + LINK SANG WHATSAPP
+    let currentResults = [];
+
+    // 4. HÀM CHIA SẺ ẢNH TÒA NHÀ + LINK SANG WHATSAPP
     async function shareLocationWithImage(index) {
       const item = currentResults[index];
       const shareText = `Gửi bạn vị trí: ${item.name}\nĐịa chỉ: ${item.city} - ${item.info}\nLink Google Map: ${item.mapLink}`;
 
       try {
-        // Tải file ảnh từ thư mục cục bộ chuyển thành Blob/File
         const response = await fetch(item.image);
         const blob = await response.blob();
         const file = new File([blob], 'building.jpg', { type: blob.type || 'image/jpeg' });
 
-        // Sử dụng Web Share API (Hoạt động hoàn hảo trên điện thoại Android/iOS)
         if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
           await navigator.share({
             files: [file],
@@ -120,19 +176,17 @@
         console.log('Không gửi được file ảnh trực tiếp:', err);
       }
 
-      // Phương án dự phòng (Mở link WhatsApp truyền text + link map)
       const fallbackUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
       window.open(fallbackUrl, '_blank');
     }
 
-    let currentResults = [];
-
     // 5. XỬ LÝ KHI BẤM NÚT TÌM KIẾM
-    function handleSearch() {
+    async function handleSearch() {
       const input = document.getElementById('customerLink').value.trim();
       const errorDiv = document.getElementById('errorMessage');
       const resultsContainer = document.getElementById('resultsContainer');
       const resultsList = document.getElementById('resultsList');
+      const btn = document.getElementById('searchBtn');
 
       errorDiv.classList.add('hidden');
       resultsContainer.classList.add('hidden');
@@ -143,69 +197,77 @@
         return;
       }
 
-      const coords = extractCoordsFromUrl(input);
+      const originalBtnText = btn.innerText;
+      btn.innerText = "Đang tra cứu...";
+      btn.disabled = true;
 
-      if (!coords) {
-        showError("Không thể đọc được tọa độ từ link này. Bạn hãy mở link Google Map đó trên trình duyệt web cho nó load hết, rồi copy link dài chứa thông số '@latitude,longitude' dán vào nhé.");
-        return;
+      try {
+        const coords = await extractCoordsFromUrl(input);
+
+        if (!coords) {
+          showError("Không tự động giải mã được link ngắn này. Bạn hãy nhấp mở link trên trình duyệt cho nó load hết, rồi copy đường link dài dán vào lại nhé.");
+          return;
+        }
+
+        const results = locationsData.map(item => {
+          const dist = calculateDistance(coords.lat, coords.lng, item.lat, item.lng);
+          return { ...item, distance: parseFloat(dist) };
+        });
+
+        results.sort((a, b) => a.distance - b.distance);
+        currentResults = results;
+
+        results.forEach((item, index) => {
+          const itemHtml = `
+            <div class="flex flex-col sm:flex-row items-center justify-between p-4 border rounded-xl hover:shadow-md transition bg-white gap-4">
+              <div class="flex items-center gap-4 w-full sm:w-auto">
+                <img
+                  src="${item.image}"
+                  alt="${item.name}"
+                  class="w-20 h-20 object-cover rounded-lg border bg-gray-50"
+                  onerror="this.src='https://via.placeholder.com/80?text=No+Image'"
+                />
+                <div>
+                  <h3 class="font-bold text-gray-800 text-lg">${item.name}</h3>
+                  <p class="text-sm text-gray-500">${item.city}</p>
+                  <p class="text-sm text-gray-600 mt-1">${item.info}</p>
+                </div>
+              </div>
+
+              <div class="flex sm:flex-col items-center sm:items-end justify-between w-full sm:w-auto border-t sm:border-t-0 pt-2 sm:pt-0 gap-2">
+                <span class="text-xl font-extrabold text-blue-600">${item.distance} km</span>
+                
+                <div class="flex flex-col items-end gap-1">
+                  <a
+                    href="${item.mapLink}"
+                    target="_blank"
+                    rel="noreferrer"
+                    class="text-sm text-blue-500 hover:underline"
+                  >
+                    Mở Google Map ↗
+                  </a>
+
+                  <button
+                    onclick="shareLocationWithImage(${index})"
+                    class="inline-flex items-center gap-1.5 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition shadow-sm mt-1"
+                  >
+                    <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                      <path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.305 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.392 1.592 5.448 0 9.886-4.434 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-.999 3.648 3.742-.981z"/>
+                    </svg>
+                    Gửi Ảnh & Map WhatsApp
+                  </button>
+                </div>
+              </div>
+            </div>
+          `;
+          resultsList.insertAdjacentHTML('beforeend', itemHtml);
+        });
+
+        resultsContainer.classList.remove('hidden');
+      } finally {
+        btn.innerText = originalBtnText;
+        btn.disabled = false;
       }
-
-      const results = locationsData.map(item => {
-        const dist = calculateDistance(coords.lat, coords.lng, item.lat, item.lng);
-        return { ...item, distance: parseFloat(dist) };
-      });
-
-      results.sort((a, b) => a.distance - b.distance);
-      currentResults = results;
-
-      results.forEach((item, index) => {
-        const itemHtml = `
-          <div class="flex flex-col sm:flex-row items-center justify-between p-4 border rounded-xl hover:shadow-md transition bg-white gap-4">
-            <div class="flex items-center gap-4 w-full sm:w-auto">
-              <img
-                src="${item.image}"
-                alt="${item.name}"
-                class="w-20 h-20 object-cover rounded-lg border bg-gray-50"
-                onerror="this.src='https://via.placeholder.com/80?text=No+Image'"
-              />
-              <div>
-                <h3 class="font-bold text-gray-800 text-lg">${item.name}</h3>
-                <p class="text-sm text-gray-500">${item.city}</p>
-                <p class="text-sm text-gray-600 mt-1">${item.info}</p>
-              </div>
-            </div>
-
-            <div class="flex sm:flex-col items-center sm:items-end justify-between w-full sm:w-auto border-t sm:border-t-0 pt-2 sm:pt-0 gap-2">
-              <span class="text-xl font-extrabold text-blue-600">${item.distance} km</span>
-              
-              <div class="flex flex-col items-end gap-1">
-                <a
-                  href="${item.mapLink}"
-                  target="_blank"
-                  rel="noreferrer"
-                  class="text-sm text-blue-500 hover:underline"
-                >
-                  Mở Google Map ↗
-                </a>
-
-                <!-- Nút chia sẻ ảnh + map sang WhatsApp -->
-                <button
-                  onclick="shareLocationWithImage(${index})"
-                  class="inline-flex items-center gap-1.5 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition shadow-sm mt-1"
-                >
-                  <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
-                    <path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.305 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.392 1.592 5.448 0 9.886-4.434 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-.999 3.648 3.742-.981z"/>
-                  </svg>
-                  Gửi Ảnh & Map WhatsApp
-                </button>
-              </div>
-            </div>
-          </div>
-        `;
-        resultsList.insertAdjacentHTML('beforeend', itemHtml);
-      });
-
-      resultsContainer.classList.remove('hidden');
     }
 
     function showError(msg) {
